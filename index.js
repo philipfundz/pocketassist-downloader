@@ -80,7 +80,7 @@ app.post('/download', async (req, res) => {
     outputPath = path.join(TEMP_DIR, `${uuidv4()}.mp4`);
     await ytDlp(url.trim(), {
       output: outputPath,
-      format: 'bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480][ext=mp4]/best[height<=360]/worst',
+      format: 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best[height<=480]/worst',
       mergeOutputFormat: 'mp4',
       noPlaylist: true,
       noCheckCertificates: true,
@@ -102,13 +102,22 @@ app.post('/download', async (req, res) => {
 
       await new Promise((resolve, reject) => {
         let finished = false;
+// Tiered quality: shorter clips keep more sharpness, longer clips compress harder
+        let scaleHeight, crf;
+        if (durationSeconds <= 60) {
+          scaleHeight = 720; crf = 23;
+        } else if (durationSeconds <= 180) {
+          scaleHeight = 480; crf = 25;
+        } else {
+          scaleHeight = 480; crf = 28;
+        }
 
         ffmpegCommand = ffmpeg(outputPath)
           .outputOptions([
             '-vcodec libx264',
-            '-crf 28',
+            `-crf ${crf}`,
             '-preset fast',
-            '-vf scale=480:-2',
+            `-vf scale=-2:${scaleHeight}`,
             '-acodec aac',
             '-b:a 96k',
           ])
