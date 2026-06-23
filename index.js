@@ -22,16 +22,16 @@ const cleanup = (filePath) => {
   }
 };
 
-// Auth middleware
+// Health check — public, no auth (UptimeRobot can't send custom headers)
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok', service: 'pocketassist-downloader' });
+});
+
+// Auth middleware — applies to everything below this line (e.g. /download)
 app.use((req, res, next) => {
   const token = req.headers['x-auth-token'];
   if (token !== AUTH_TOKEN) return res.status(401).json({ error: 'Unauthorized' });
   next();
-});
-
-// Health check
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok', service: 'pocketassist-downloader' });
 });
 
 // Main download endpoint
