@@ -68,6 +68,12 @@ app.post('/download', async (req, res) => {
    } catch (infoErr) {
       console.error('yt-dlp info fetch failed:', infoErr.message || infoErr);
       if (infoErr.stderr) console.error('yt-dlp stderr:', infoErr.stderr);
+
+      const stderr = infoErr.stderr || '';
+      if (stderr.includes('Unsupported URL') || stderr.includes('[generic]')) {
+        return res.status(400).json({ error: 'That doesn\'t look like a video link — please share the direct link to the video, not a profile or homepage link.' });
+      }
+
       return res.status(400).json({ error: 'Could not fetch video info — link may be invalid or unsupported' });
     }
 
