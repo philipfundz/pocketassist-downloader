@@ -27,6 +27,17 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', service: 'pocketassist-downloader' });
 });
 
+// TEMP DEBUG ROUTE — remove after diagnosing yt-dlp version issue
+app.get('/debug/ytdlp-version', async (req, res) => {
+  try {
+    const ytDlp = require('yt-dlp-exec');
+    const version = await ytDlp('--version');
+    res.json({ version });
+  } catch (e) {
+    res.status(500).json({ error: e.message, stderr: e.stderr || null });
+  }
+});
+
 // Auth middleware — applies to everything below this line (e.g. /download)
 app.use((req, res, next) => {
   const token = req.headers['x-auth-token'];
@@ -54,7 +65,9 @@ app.post('/download', async (req, res) => {
         noCheckCertificates: true,
         skipDownload: true,
       });
-    } catch (infoErr) {
+   } catch (infoErr) {
+      console.error('yt-dlp info fetch failed:', infoErr.message || infoErr);
+      if (infoErr.stderr) console.error('yt-dlp stderr:', infoErr.stderr);
       return res.status(400).json({ error: 'Could not fetch video info — link may be invalid or unsupported' });
     }
 
