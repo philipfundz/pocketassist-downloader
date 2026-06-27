@@ -13,7 +13,7 @@ const PORT = process.env.PORT || 3001;
 const TEMP_DIR = path.join(__dirname, 'temp');
 const AUTH_TOKEN = process.env.AUTH_TOKEN || 'pocketassist-dl-secret';
 
-const SAFE_LIMIT_MB = 14;
+const SAFE_LIMIT_MB = 10;
 const MAX_PARTS = 5;
 
 if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR);
@@ -287,13 +287,28 @@ app.post('/download', async (req, res) => {
       .filter((f) => f.startsWith(baseId))
       .sort();
 
-    cleanup(outputPath);
-    cleanup(compressedPath);
-
     if (partFiles.length === 0) {
+      cleanup(outputPath);
+      cleanup(compressedPath);
       return res.status(500).json({ error: 'Split produced no files' });
     }
 
+    // Verify no part exceeds WhatsApp's real limit (16MB) — keyframe spacing can cause overshoot
+    const oversizedPart = partFiles.find((f) => {
+      const size = fs.statSync(path.join(TEMP_DIR, f)).size / (1024 * 1024);
+      return size > 15;
+    });
+
+    if (oversizedPart) {
+      partFiles.forEach((f) => cleanup(path.join(TEMP_DIR, f)));
+      cleanup(outputPath);
+      cleanup(compressedPath);
+      return res.status(400).json({ error: 'Video too dense to split cleanly — try a shorter or lower-quality clip' });
+    }
+
+    cleanup(outputPath);
+    cleanup(compressedPath);
+    
     return res.json({
       split: true,
       caption: captionText,
