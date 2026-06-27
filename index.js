@@ -75,10 +75,10 @@ function splitVideo(inputPath, segmentSizeBytes) {
 
     const cmd = ffmpeg(inputPath)
       .outputOptions([
-        '-f segment',
-        `-segment_size ${segmentSizeBytes}`,
-        '-reset_timestamps 1',
-        '-c copy',
+        '-f', 'segment',
+        '-segment_size', `${segmentSizeBytes}`,
+        '-reset_timestamps', '1',
+        '-c', 'copy',
       ])
       .output(pattern)
       .on('end', () => {
