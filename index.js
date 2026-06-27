@@ -67,7 +67,7 @@ app.get('/file/:filename', (req, res) => {
   stream.on('error', () => cleanup(filePath));
 });
 
-function splitVideo(inputPath, segmentSizeBytes) {
+function splitVideo(inputPath, segmentSeconds) {
   return new Promise((resolve, reject) => {
     const baseId = uuidv4();
     const pattern = path.join(TEMP_DIR, `${baseId}_part%03d.mp4`);
@@ -77,7 +77,7 @@ function splitVideo(inputPath, segmentSizeBytes) {
       '-c', 'copy',
       '-map', '0',
       '-f', 'segment',
-      '-segment_size', `${segmentSizeBytes}`,
+      '-segment_time', `${segmentSeconds}`,
       '-reset_timestamps', '1',
       pattern,
     ];
@@ -261,13 +261,21 @@ app.post('/download', async (req, res) => {
       return;
     }
 
-    // Case 2: still too big — split into parts
-    const parts = Math.min(MAX_PARTS, Math.ceil(candidateSizeMB / SAFE_LIMIT_MB));
-    const segmentSizeBytes = Math.ceil((candidateSizeMB * 1024 * 1024) / parts);
+// Case 2: still too big — split into parts by time
+    // ffmpeg's segment muxer splits by duration, not byte size — derive seconds-per-part from bitrate
+    const bytesPerSecond = (candidateSizeMB * 1024 * 1024) / durationSeconds;
+    let segmentSeconds = Math.floor((SAFE_LIMIT_MB * 1024 * 1024) / bytesPerSecond);
+    if (segmentSeconds < 1) segmentSeconds = 1;
+
+    let parts = Math.ceil(durationSeconds / segmentSeconds);
+    if (parts > MAX_PARTS) {
+      segmentSeconds = Math.ceil(durationSeconds / MAX_PARTS);
+      parts = MAX_PARTS;
+    }
 
     let baseId;
     try {
-      baseId = await splitVideo(candidatePath, segmentSizeBytes);
+      baseId = await splitVideo(candidatePath, segmentSeconds);
     } catch (splitErr) {
       console.error('Split failed:', splitErr.message);
       cleanup(outputPath);
