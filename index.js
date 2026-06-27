@@ -1,4 +1,5 @@
 require('dotenv').config();
+const { spawn } = require('child_process');
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
@@ -66,40 +67,53 @@ app.get('/file/:filename', (req, res) => {
   stream.on('error', () => cleanup(filePath));
 });
 
-// Split a video by byte size, returns the shared baseId used in output filenames
 function splitVideo(inputPath, segmentSizeBytes) {
   return new Promise((resolve, reject) => {
     const baseId = uuidv4();
     const pattern = path.join(TEMP_DIR, `${baseId}_part%03d.mp4`);
+
+    const args = [
+      '-i', inputPath,
+      '-c', 'copy',
+      '-map', '0',
+      '-f', 'segment',
+      '-segment_size', `${segmentSizeBytes}`,
+      '-reset_timestamps', '1',
+      pattern,
+    ];
+
+    const proc = spawn('ffmpeg', args);
+    let stderr = '';
     let finished = false;
 
-    const cmd = ffmpeg(inputPath)
-      .outputOptions([
-        '-f', 'segment',
-        '-segment_size', `${segmentSizeBytes}`,
-        '-reset_timestamps', '1',
-        '-c', 'copy',
-      ])
-      .output(pattern)
-      .on('end', () => {
-        finished = true;
-        resolve(baseId);
-      })
-      .on('error', (err) => {
-        finished = true;
-        reject(err);
-      });
+    proc.stderr.on('data', (d) => { stderr += d.toString(); });
 
     const timeoutHandle = setTimeout(() => {
       if (!finished) {
-        try { cmd.kill('SIGKILL'); } catch (e) {}
+        finished = true;
+        proc.kill('SIGKILL');
         reject(new Error('SPLIT_TIMEOUT'));
       }
     }, 60000);
 
-    cmd.on('end', () => clearTimeout(timeoutHandle));
-    cmd.on('error', () => clearTimeout(timeoutHandle));
-    cmd.run();
+    proc.on('close', (code) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timeoutHandle);
+      if (code === 0) {
+        resolve(baseId);
+      } else {
+        console.error('ffmpeg split stderr:', stderr.slice(-1000));
+        reject(new Error(`ffmpeg exited with code ${code}`));
+      }
+    });
+
+    proc.on('error', (err) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timeoutHandle);
+      reject(err);
+    });
   });
 }
 
