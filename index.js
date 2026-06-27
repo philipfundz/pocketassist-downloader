@@ -325,6 +325,27 @@ app.post('/download', async (req, res) => {
   }
 });
 
+// Periodic safety sweep — removes orphaned temp files from crashed/incomplete requests
+const SWEEP_INTERVAL_MS = 30 * 60 * 1000; // every 30 min
+const MAX_FILE_AGE_MS = 2 * 60 * 60 * 1000; // 2 hours
+
+setInterval(() => {
+  try {
+    const now = Date.now();
+    const files = fs.readdirSync(TEMP_DIR);
+    for (const file of files) {
+      const filePath = path.join(TEMP_DIR, file);
+      const stats = fs.statSync(filePath);
+      if (now - stats.mtimeMs > MAX_FILE_AGE_MS) {
+        fs.unlinkSync(filePath);
+        console.log('Swept stale temp file:', file);
+      }
+    }
+  } catch (e) {
+    console.error('Sweep error:', e.message);
+  }
+}, SWEEP_INTERVAL_MS);
+
 app.listen(PORT, () => {
   console.log(`🚀 PocketAssist Downloader running on port ${PORT}`);
 });
