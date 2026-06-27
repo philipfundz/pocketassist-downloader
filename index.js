@@ -136,9 +136,9 @@ app.post('/download', async (req, res) => {
 
     const durationSeconds = videoInfo?.duration || 0;
 
-    if (durationSeconds > 300) {
+    if (durationSeconds > 600) {
       const mins = Math.floor(durationSeconds / 60);
-      return res.status(400).json({ error: `Video is ${mins} min long — maximum is 5 minutes` });
+      return res.status(400).json({ error: `Video is ${mins} min long — maximum is 10 minutes` });
     }
 
     // Extract caption
