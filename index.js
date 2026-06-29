@@ -199,11 +199,13 @@ app.post('/download', async (req, res) => {
           let finished = false;
           let scaleHeight, crf;
           if (durationSeconds <= 60) {
+            scaleHeight = 720; crf = 20;
+          } else if (durationSeconds <= 120) {
             scaleHeight = 720; crf = 23;
-          } else if (durationSeconds <= 180) {
-            scaleHeight = 480; crf = 25;
+          } else if (durationSeconds <= 300) {
+            scaleHeight = 480; crf = 23;
           } else {
-            scaleHeight = 480; crf = 28;
+            scaleHeight = 480; crf = 26;
           }
 
           const ffmpegCommand = ffmpeg(outputPath)
