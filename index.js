@@ -26,20 +26,9 @@ const cleanup = (filePath) => {
   }
 };
 
-// Health check — public, no auth (UptimeRobot can't send custom headers)
+// Health check — public, no auth
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', service: 'pocketassist-downloader' });
-});
-
-// TEMP DEBUG ROUTE — remove after diagnosing yt-dlp version issue
-app.get('/debug/ytdlp-version', async (req, res) => {
-  try {
-    const ytDlp = require('yt-dlp-exec');
-    const version = await ytDlp('--version');
-    res.json({ version });
-  } catch (e) {
-    res.status(500).json({ error: e.message, stderr: e.stderr || null });
-  }
 });
 
 // Auth middleware — applies to everything below this line
@@ -52,7 +41,6 @@ app.use((req, res, next) => {
 // Serve a single split part, then delete it
 app.get('/file/:filename', (req, res) => {
   const filename = req.params.filename;
-  // prevent path traversal
   if (filename.includes('..') || filename.includes('/')) {
     return res.status(400).json({ error: 'Invalid filename' });
   }
@@ -122,6 +110,8 @@ app.post('/download', async (req, res) => {
   const { url } = req.body;
   if (!url) return res.status(400).json({ error: 'URL is required' });
 
+  const isInstagram = url.includes('instagram.com');
+
   let outputPath, compressedPath;
 
   try {
@@ -135,11 +125,13 @@ app.post('/download', async (req, res) => {
         noPlaylist: true,
         noCheckCertificates: true,
         skipDownload: true,
-        addHeader: [
-          'referer:https://www.instagram.com/',
-          'x-ig-app-id:936619743392459',
-        ],
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        ...(isInstagram ? {
+          addHeader: [
+            'referer:https://www.instagram.com/',
+            'x-ig-app-id:936619743392459',
+          ],
+          userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        } : {}),
       });
     } catch (infoErr) {
       console.error('yt-dlp info fetch failed:', infoErr.message || infoErr);
@@ -179,11 +171,13 @@ app.post('/download', async (req, res) => {
       mergeOutputFormat: 'mp4',
       noPlaylist: true,
       noCheckCertificates: true,
-      addHeader: [
-        'referer:https://www.instagram.com/',
-        'x-ig-app-id:936619743392459',
-      ],
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+      ...(isInstagram ? {
+        addHeader: [
+          'referer:https://www.instagram.com/',
+          'x-ig-app-id:936619743392459',
+        ],
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+      } : {}),
     });
 
     if (!fs.existsSync(outputPath)) {
@@ -193,7 +187,6 @@ app.post('/download', async (req, res) => {
     const stats = fs.statSync(outputPath);
     const fileSizeMB = stats.size / (1024 * 1024);
 
-    // Decide candidate: original (if small) or attempt compression
     let candidatePath = outputPath;
     let candidateSizeMB = fileSizeMB;
 
@@ -204,7 +197,6 @@ app.post('/download', async (req, res) => {
       try {
         await new Promise((resolve, reject) => {
           let finished = false;
-          // Tiered quality: shorter clips keep more sharpness, longer clips compress harder
           let scaleHeight, crf;
           if (durationSeconds <= 60) {
             scaleHeight = 720; crf = 23;
@@ -244,7 +236,6 @@ app.post('/download', async (req, res) => {
           candidateSizeMB = fs.statSync(compressedPath).size / (1024 * 1024);
         }
       } catch (compressErr) {
-        // Compression failed or timed out — fall back silently to original file, no error to user
         console.error('Compression skipped:', compressErr.message);
         cleanup(compressedPath);
         compressedPath = null;
@@ -271,8 +262,7 @@ app.post('/download', async (req, res) => {
       return;
     }
 
-// Case 2: still too big — split into parts by time
-    // ffmpeg's segment muxer splits by duration, not byte size — derive seconds-per-part from bitrate
+    // Case 2: still too big — split into parts by time
     const bytesPerSecond = (candidateSizeMB * 1024 * 1024) / durationSeconds;
     let segmentSeconds = Math.floor((SAFE_LIMIT_MB * 1024 * 1024) / bytesPerSecond);
     if (segmentSeconds < 1) segmentSeconds = 1;
@@ -303,7 +293,6 @@ app.post('/download', async (req, res) => {
       return res.status(500).json({ error: 'Split produced no files' });
     }
 
-    // Verify no part exceeds WhatsApp's real limit (16MB) — keyframe spacing can cause overshoot
     const oversizedPart = partFiles.find((f) => {
       const size = fs.statSync(path.join(TEMP_DIR, f)).size / (1024 * 1024);
       return size > 15;
@@ -318,7 +307,7 @@ app.post('/download', async (req, res) => {
 
     cleanup(outputPath);
     cleanup(compressedPath);
-    
+
     return res.json({
       split: true,
       caption: captionText,
@@ -331,13 +320,13 @@ app.post('/download', async (req, res) => {
     console.error('Downloader error:', err.message);
     cleanup(outputPath);
     cleanup(compressedPath);
-    return res.status(500).json({ error: 'Download failed: ' + err.message });
+    return res.status(500).json({ error: 'Download failed — please try again or use a different link' });
   }
 });
 
-// Periodic safety sweep — removes orphaned temp files from crashed/incomplete requests
-const SWEEP_INTERVAL_MS = 30 * 60 * 1000; // every 30 min
-const MAX_FILE_AGE_MS = 2 * 60 * 60 * 1000; // 2 hours
+// Periodic safety sweep — removes orphaned temp files
+const SWEEP_INTERVAL_MS = 30 * 60 * 1000;
+const MAX_FILE_AGE_MS = 2 * 60 * 60 * 1000;
 
 setInterval(() => {
   try {
