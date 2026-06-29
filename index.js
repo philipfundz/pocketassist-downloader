@@ -135,6 +135,11 @@ app.post('/download', async (req, res) => {
         noPlaylist: true,
         noCheckCertificates: true,
         skipDownload: true,
+        addHeader: [
+          'referer:https://www.instagram.com/',
+          'x-ig-app-id:936619743392459',
+        ],
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
       });
     } catch (infoErr) {
       console.error('yt-dlp info fetch failed:', infoErr.message || infoErr);
@@ -174,6 +179,11 @@ app.post('/download', async (req, res) => {
       mergeOutputFormat: 'mp4',
       noPlaylist: true,
       noCheckCertificates: true,
+      addHeader: [
+        'referer:https://www.instagram.com/',
+        'x-ig-app-id:936619743392459',
+      ],
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
     });
 
     if (!fs.existsSync(outputPath)) {
