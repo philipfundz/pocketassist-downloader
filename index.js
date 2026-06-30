@@ -42,7 +42,7 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', service: 'pocketassist-downloader' });
 });
 
-// Auth middleware — applies to everything below this line
+// Auth middleware
 app.use((req, res, next) => {
   const token = req.headers['x-auth-token'];
   if (token !== AUTH_TOKEN) return res.status(401).json({ error: 'Unauthorized' });
@@ -122,6 +122,7 @@ app.post('/download', async (req, res) => {
   if (!url) return res.status(400).json({ error: 'URL is required' });
 
   const isInstagram = url.includes('instagram.com');
+  const isYouTube = url.includes('youtube.com') || url.includes('youtu.be');
 
   let outputPath, compressedPath;
 
@@ -136,7 +137,10 @@ app.post('/download', async (req, res) => {
         noPlaylist: true,
         noCheckCertificates: true,
         skipDownload: true,
-        ...(process.env.YOUTUBE_COOKIES && !isInstagram ? { cookies: YT_COOKIES_PATH } : {}),
+        ...(isYouTube ? {
+          extractorArgs: 'youtube:player_client=web',
+          ...(process.env.YOUTUBE_COOKIES ? { cookies: YT_COOKIES_PATH } : {}),
+        } : {}),
         ...(isInstagram ? {
           addHeader: [
             'referer:https://www.instagram.com/',
@@ -183,8 +187,11 @@ app.post('/download', async (req, res) => {
       mergeOutputFormat: 'mp4',
       noPlaylist: true,
       noCheckCertificates: true,
-        ...(process.env.YOUTUBE_COOKIES && !isInstagram ? { cookies: YT_COOKIES_PATH } : {}),
-        ...(isInstagram ? {
+      ...(isYouTube ? {
+        extractorArgs: 'youtube:player_client=web',
+        ...(process.env.YOUTUBE_COOKIES ? { cookies: YT_COOKIES_PATH } : {}),
+      } : {}),
+      ...(isInstagram ? {
         addHeader: [
           'referer:https://www.instagram.com/',
           'x-ig-app-id:936619743392459',
@@ -339,7 +346,7 @@ app.post('/download', async (req, res) => {
   }
 });
 
-// Periodic safety sweep — removes orphaned temp files
+// Periodic safety sweep
 const SWEEP_INTERVAL_MS = 30 * 60 * 1000;
 const MAX_FILE_AGE_MS = 2 * 60 * 60 * 1000;
 
