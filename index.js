@@ -13,6 +13,17 @@ const PORT = process.env.PORT || 3001;
 const TEMP_DIR = path.join(__dirname, 'temp');
 const AUTH_TOKEN = process.env.AUTH_TOKEN || 'pocketassist-dl-secret';
 
+// Write YouTube cookies to temp file at startup
+const YT_COOKIES_PATH = '/tmp/yt_cookies.txt';
+if (process.env.YOUTUBE_COOKIES) {
+  try {
+    fs.writeFileSync(YT_COOKIES_PATH, process.env.YOUTUBE_COOKIES);
+    console.log('YouTube cookies written to', YT_COOKIES_PATH);
+  } catch (e) {
+    console.error('Failed to write YouTube cookies:', e.message);
+  }
+}
+
 const SAFE_LIMIT_MB = 10;
 const MAX_PARTS = 5;
 
@@ -125,6 +136,7 @@ app.post('/download', async (req, res) => {
         noPlaylist: true,
         noCheckCertificates: true,
         skipDownload: true,
+        ...(process.env.YOUTUBE_COOKIES && !isInstagram ? { cookies: YT_COOKIES_PATH } : {}),
         ...(isInstagram ? {
           addHeader: [
             'referer:https://www.instagram.com/',
@@ -171,7 +183,8 @@ app.post('/download', async (req, res) => {
       mergeOutputFormat: 'mp4',
       noPlaylist: true,
       noCheckCertificates: true,
-      ...(isInstagram ? {
+        ...(process.env.YOUTUBE_COOKIES && !isInstagram ? { cookies: YT_COOKIES_PATH } : {}),
+        ...(isInstagram ? {
         addHeader: [
           'referer:https://www.instagram.com/',
           'x-ig-app-id:936619743392459',
