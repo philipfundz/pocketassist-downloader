@@ -37,6 +37,17 @@ const cleanup = (filePath) => {
   }
 };
 
+// Write Instagram cookies to temp file at startup
+const IG_COOKIES_PATH = '/tmp/ig_cookies.txt';
+if (process.env.INSTAGRAM_COOKIES) {
+  try {
+    fs.writeFileSync(IG_COOKIES_PATH, process.env.INSTAGRAM_COOKIES);
+    console.log('Instagram cookies written to', IG_COOKIES_PATH);
+  } catch (e) {
+    console.error('Failed to write Instagram cookies:', e.message);
+  }
+}
+
 // Health check — public, no auth
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', service: 'pocketassist-downloader' });
@@ -147,6 +158,7 @@ app.post('/download', async (req, res) => {
             'x-ig-app-id:936619743392459',
           ],
           userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+          ...(process.env.INSTAGRAM_COOKIES ? { cookies: IG_COOKIES_PATH } : {}),
         } : {}),
       });
     } catch (infoErr) {
@@ -192,12 +204,13 @@ app.post('/download', async (req, res) => {
         ...(process.env.YOUTUBE_COOKIES ? { cookies: YT_COOKIES_PATH } : {}),
       } : {}),
       ...(isInstagram ? {
-        addHeader: [
-          'referer:https://www.instagram.com/',
-          'x-ig-app-id:936619743392459',
-        ],
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-      } : {}),
+          addHeader: [
+            'referer:https://www.instagram.com/',
+            'x-ig-app-id:936619743392459',
+          ],
+          userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+          ...(process.env.INSTAGRAM_COOKIES ? { cookies: IG_COOKIES_PATH } : {}),
+        } : {}),
     });
 
     if (!fs.existsSync(outputPath)) {
