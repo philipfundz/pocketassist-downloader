@@ -134,6 +134,7 @@ app.post('/download', async (req, res) => {
 
   const isInstagram = url.includes('instagram.com');
   const isYouTube = url.includes('youtube.com') || url.includes('youtu.be');
+  const isFacebook = url.includes('facebook.com') || url.includes('fb.watch');
 
   let outputPath, compressedPath;
 
@@ -195,7 +196,9 @@ app.post('/download', async (req, res) => {
     outputPath = path.join(TEMP_DIR, `${uuidv4()}.mp4`);
     await ytDlp(url.trim(), {
       output: outputPath,
-      format: 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best[height<=480]/worst',
+    format: isFacebook
+     ? 'bestvideo[height<=720]+bestaudio/best[height<=720]/best'
+     : 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best[height<=480]/worst',
       mergeOutputFormat: 'mp4',
       noPlaylist: true,
       noCheckCertificates: true,
