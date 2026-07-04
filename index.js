@@ -246,6 +246,26 @@ app.get('/file/:filename', (req, res) => {
   });
 });
 
+// ─── ERROR HANDLING MIDDLEWARE ────────────────────────────────────────────────
+
+// 1. Catch 404 errors (like the missing /download route)
+app.use((req, res, next) => {
+  res.status(404).json({ 
+    success: false, 
+    error: "Route not found. Please verify your bot is hitting the correct endpoint configuration." 
+  });
+});
+
+// 2. Catch 500 internal server errors (crashes, system failures)
+app.use((err, req, res, next) => {
+  console.error('Global Server Error:', err.stack);
+  res.status(500).json({ 
+    success: false, 
+    error: "Something went wrong while processing your media. Please try again in a few moments." 
+  });
+});
+
+
 app.listen(PORT, () => {
   console.log(`Downloader microservice running on port ${PORT}`);
 });
