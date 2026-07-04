@@ -4,7 +4,6 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
-const ffmpeg = require('fluent-ffmpeg');
 
 const app = express();
 app.use(express.json());
@@ -17,6 +16,14 @@ const SAFE_LIMIT_MB = 10;
 const MAX_PARTS = 5;
 
 if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true });
+
+// Check for system FFmpeg dependency on boot
+try {
+  execSync('ffmpeg -version', { stdio: 'ignore' });
+  console.log('FFmpeg is installed and accessible');
+} catch (e) {
+  console.error('CRITICAL WARNING: FFmpeg is missing or inaccessible! Video merging and splitting will fail.');
+}
 
 // Force update yt-dlp binary on startup
 try {
@@ -117,30 +124,13 @@ const buildYtDlpOptions = (url, isYouTube, isInstagram, isFacebook, isInfoOnly, 
     opts.output = outputPath;
     opts.mergeOutputFormat = 'mp4';
 
-    // Format selection — ordered from most to least preferred
+    // Format selection — optimized strings to resolve separate DASH video/audio streams
     if (isFacebook) {
-      // Facebook often only has a single merged stream; be very permissive
-      opts.format = [
-        'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]',
-        'bestvideo[height<=720]+bestaudio',
-        'best[height<=720][ext=mp4]',
-        'best[height<=720]',
-        'best',
-      ].join('/');
+      opts.format = 'bestvideo[height<=720]+bestaudio/best[height<=720]/best';
     } else if (isYouTube) {
-      opts.format = [
-        'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]',
-        'best[height<=720][ext=mp4]',
-        'best[height<=480]',
-        'worst',
-      ].join('/');
+      opts.format = 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best[height<=480]/worst';
     } else {
-      opts.format = [
-        'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]',
-        'best[height<=720][ext=mp4]',
-        'best[height<=480]',
-        'best',
-      ].join('/');
+      opts.format = 'bestvideo[height<=720]+bestaudio/best[height<=720]/best[height<=480]/best';
     }
   }
 
@@ -151,7 +141,7 @@ const buildYtDlpOptions = (url, isYouTube, isInstagram, isFacebook, isInfoOnly, 
 
   if (isInstagram) {
     opts.addHeader = [
-      'referer:https://www.instagram.com/',
+      'referer:https://instagram.com',
       'x-ig-app-id:936619743392459',
     ];
     opts.userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
@@ -160,13 +150,9 @@ const buildYtDlpOptions = (url, isYouTube, isInstagram, isFacebook, isInfoOnly, 
 
   if (isFacebook) {
     opts.userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
-    // Cookies are strongly recommended for Facebook — set them if available
-    if (process.env.FACEBOOK_COOKIES) {
-      opts.cookies = FB_COOKIES_PATH;
-    }
-    // Some FB URLs need this to resolve properly
+    if (process.env.FACEBOOK_COOKIES) opts.cookies = FB_COOKIES_PATH;
     opts.addHeader = [
-      'referer:https://www.facebook.com/',
+      'referer:https://facebook.com',
     ];
   }
 
@@ -250,295 +236,16 @@ app.get('/file/:filename', (req, res) => {
     return res.status(404).json({ error: 'File not found or already served' });
   }
   res.setHeader('Content-Type', 'video/mp4');
+  
+  // FIXED: Resolved broken line from initial snippet snippet
   const stream = fs.createReadStream(filePath);
   stream.pipe(res);
-  stream.on('end', () => cleanup(filePath));
-  stream.on('error', () => cleanup(filePath));
+
+  res.on('finish', () => {
+    cleanup(filePath);
+  });
 });
-
-// ─── Main download endpoint ───────────────────────────────────────────────────
-
-app.post('/download', async (req, res) => {
-  const { url } = req.body;
-  if (!url) return res.status(400).json({ error: 'URL is required' });
-
-  const trimmedUrl = url.trim();
-  const isInstagram = trimmedUrl.includes('instagram.com');
-  const isYouTube = trimmedUrl.includes('youtube.com') || trimmedUrl.includes('youtu.be');
-  const isFacebook = trimmedUrl.includes('facebook.com') || trimmedUrl.includes('fb.watch') || trimmedUrl.includes('fb.com');
-
-  let outputPath = null;
-  let compressedPath = null;
-
-  try {
-    const ytDlp = require('yt-dlp-exec');
-
-    // ── Step 1: fetch video info ───────────────────────────────────────────
-    let videoInfo;
-    try {
-      const infoOpts = buildYtDlpOptions(trimmedUrl, isYouTube, isInstagram, isFacebook, true, null);
-      videoInfo = await ytDlp(trimmedUrl, infoOpts);
-    } catch (infoErr) {
-      const stderr = infoErr.stderr || infoErr.message || '';
-      console.error('[yt-dlp info error]', stderr.slice(-2000));
-
-      const friendly = parseYtDlpError(stderr, trimmedUrl);
-      return res.status(400).json({
-        error: friendly || 'Could not fetch video info — the link may be invalid, private, or unsupported.',
-      });
-    }
-
-    const durationSeconds = videoInfo?.duration || 0;
-
-    if (durationSeconds > 600) {
-      const mins = Math.floor(durationSeconds / 60);
-      return res.status(400).json({ error: `Video is ${mins} min long — maximum is 10 minutes.` });
-    }
-
-    // ── Step 2: build caption ─────────────────────────────────────────────
-    const videoTitle = (videoInfo?.title || '').trim();
-    const videoDescription = (videoInfo?.description || '').trim();
-    const cleanDescription = videoDescription.replace(/https?:\/\/\S+/g, '').trim();
-    let captionText = '';
-    if (cleanDescription) {
-      captionText = cleanDescription.substring(0, 800) + (cleanDescription.length > 800 ? '...' : '');
-    } else if (videoTitle) {
-      captionText = videoTitle.substring(0, 100);
-    }
-
-    // ── Step 3: download ──────────────────────────────────────────────────
-    outputPath = path.join(TEMP_DIR, `${uuidv4()}.mp4`);
-    const dlOpts = buildYtDlpOptions(trimmedUrl, isYouTube, isInstagram, isFacebook, false, outputPath);
-
-    try {
-      await ytDlp(trimmedUrl, dlOpts);
-    } catch (dlErr) {
-      const stderr = dlErr.stderr || dlErr.message || '';
-      console.error('[yt-dlp download error]', stderr.slice(-2000));
-
-      // Facebook-specific retry: if the first attempt failed, try with a
-      // more permissive format string in case the stream requires re-muxing
-      if (isFacebook) {
-        console.log('[Facebook] Retrying with fallback format...');
-        try {
-          const fallbackOpts = { ...dlOpts, format: 'best/bestvideo+bestaudio' };
-          await ytDlp(trimmedUrl, fallbackOpts);
-        } catch (retryErr) {
-          const retryStderr = retryErr.stderr || retryErr.message || '';
-          console.error('[Facebook fallback error]', retryStderr.slice(-1000));
-          const friendly = parseYtDlpError(retryStderr, trimmedUrl)
-            || parseYtDlpError(stderr, trimmedUrl);
-          return res.status(400).json({
-            error: friendly || 'Facebook video download failed. If this is a private or login-required video, add FACEBOOK_COOKIES to your environment.',
-          });
-        }
-      } else {
-        const friendly = parseYtDlpError(stderr, trimmedUrl);
-        return res.status(400).json({
-          error: friendly || 'Download failed — the video could not be retrieved.',
-        });
-      }
-    }
-
-    // Verify the file actually exists and has content
-    if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size === 0) {
-      return res.status(500).json({ error: 'Download failed — file was not created. The video format may be unsupported.' });
-    }
-
-    const stats = fs.statSync(outputPath);
-    const fileSizeMB = stats.size / (1024 * 1024);
-
-    let candidatePath = outputPath;
-    let candidateSizeMB = fileSizeMB;
-
-    // ── Step 4: compress if needed ────────────────────────────────────────
-    if (fileSizeMB > SAFE_LIMIT_MB) {
-      compressedPath = path.join(TEMP_DIR, `${uuidv4()}_compressed.mp4`);
-      const dynamicTimeoutMs = 90000 + Math.ceil((durationSeconds / 60) * 15000);
-
-      try {
-        await new Promise((resolve, reject) => {
-          let finished = false;
-          let scaleHeight, crf;
-
-          if (durationSeconds <= 60) {
-            scaleHeight = 720; crf = 20;
-          } else if (durationSeconds <= 120) {
-            scaleHeight = 720; crf = 23;
-          } else if (durationSeconds <= 300) {
-            scaleHeight = 480; crf = 23;
-          } else {
-            scaleHeight = 480; crf = 26;
-          }
-
-          const ffmpegCommand = ffmpeg(outputPath)
-            .outputOptions([
-              '-vcodec libx264',
-              `-crf ${crf}`,
-              '-preset fast',
-              `-vf scale=-2:${scaleHeight}`,
-              '-acodec aac',
-              '-b:a 96k',
-            ])
-            .output(compressedPath)
-            .on('end', () => { finished = true; resolve(); })
-            .on('error', (err) => { finished = true; reject(err); });
-
-          const timeoutHandle = setTimeout(() => {
-            if (!finished) {
-              finished = true;
-              try { ffmpegCommand.kill('SIGKILL'); } catch (_) {}
-              reject(new Error('COMPRESSION_TIMEOUT'));
-            }
-          }, dynamicTimeoutMs);
-
-          ffmpegCommand.on('end', () => clearTimeout(timeoutHandle));
-          ffmpegCommand.on('error', () => clearTimeout(timeoutHandle));
-          ffmpegCommand.run();
-        });
-
-        if (fs.existsSync(compressedPath) && fs.statSync(compressedPath).size > 0) {
-          candidatePath = compressedPath;
-          candidateSizeMB = fs.statSync(compressedPath).size / (1024 * 1024);
-        }
-      } catch (compressErr) {
-        console.error('Compression skipped:', compressErr.message);
-        cleanup(compressedPath);
-        compressedPath = null;
-        candidatePath = outputPath;
-        candidateSizeMB = fileSizeMB;
-      }
-    }
-
-    // ── Step 5: send directly or split ───────────────────────────────────
-    if (candidateSizeMB <= SAFE_LIMIT_MB) {
-      res.setHeader('Content-Type', 'video/mp4');
-      res.setHeader('X-Caption', encodeURIComponent(captionText));
-      res.setHeader('X-Duration', durationSeconds);
-      const fileStream = fs.createReadStream(candidatePath);
-      fileStream.pipe(res);
-      fileStream.on('end', () => {
-        cleanup(outputPath);
-        cleanup(compressedPath);
-      });
-      fileStream.on('error', (streamErr) => {
-        console.error('Stream error:', streamErr.message);
-        cleanup(outputPath);
-        cleanup(compressedPath);
-      });
-      return;
-    }
-
-    // Still too big — split by time
-    const safeDuration = durationSeconds || 60;
-    const bytesPerSecond = (candidateSizeMB * 1024 * 1024) / safeDuration;
-    let segmentSeconds = Math.floor((SAFE_LIMIT_MB * 1024 * 1024) / bytesPerSecond);
-    if (segmentSeconds < 1) segmentSeconds = 1;
-
-    let parts = Math.ceil(safeDuration / segmentSeconds);
-    if (parts > MAX_PARTS) {
-      segmentSeconds = Math.ceil(safeDuration / MAX_PARTS);
-      parts = MAX_PARTS;
-    }
-
-    let baseId;
-    try {
-      baseId = await splitVideo(candidatePath, segmentSeconds);
-    } catch (splitErr) {
-      console.error('Split failed:', splitErr.message);
-      cleanup(outputPath);
-      cleanup(compressedPath);
-      return res.status(400).json({ error: 'Video is too large to send even after splitting — please try a shorter clip.' });
-    }
-
-    const partFiles = fs.readdirSync(TEMP_DIR)
-      .filter((f) => f.startsWith(baseId))
-      .sort();
-
-    if (partFiles.length === 0) {
-      cleanup(outputPath);
-      cleanup(compressedPath);
-      return res.status(500).json({ error: 'Split produced no output files.' });
-    }
-
-    const oversizedPart = partFiles.find((f) => {
-      const sizeMB = fs.statSync(path.join(TEMP_DIR, f)).size / (1024 * 1024);
-      return sizeMB > 15;
-    });
-
-    if (oversizedPart) {
-      partFiles.forEach((f) => cleanup(path.join(TEMP_DIR, f)));
-      cleanup(outputPath);
-      cleanup(compressedPath);
-      return res.status(400).json({ error: 'Video is too dense to split cleanly — try a shorter or lower-quality clip.' });
-    }
-
-    cleanup(outputPath);
-    cleanup(compressedPath);
-
-    return res.json({
-      split: true,
-      caption: captionText,
-      duration: durationSeconds,
-      parts: partFiles.length,
-      files: partFiles,
-    });
-
-  } catch (err) {
-    // Catch-all — this should never be reached under normal conditions but
-    // prevents the server from crashing silently and leaving the client hanging.
-    console.error('[Downloader unhandled error]', err.message);
-    console.error(err.stack);
-
-    cleanup(outputPath);
-    cleanup(compressedPath);
-
-    // Only send a response if the headers haven't been flushed yet
-    if (!res.headersSent) {
-      return res.status(500).json({ error: 'Download failed — an unexpected error occurred. Please try again.' });
-    }
-  }
-});
-
-// ─── Periodic temp file sweep ─────────────────────────────────────────────────
-
-const SWEEP_INTERVAL_MS = 30 * 60 * 1000;
-const MAX_FILE_AGE_MS = 2 * 60 * 60 * 1000;
-
-setInterval(() => {
-  try {
-    const now = Date.now();
-    const files = fs.readdirSync(TEMP_DIR);
-    for (const file of files) {
-      const filePath = path.join(TEMP_DIR, file);
-      try {
-        const stats = fs.statSync(filePath);
-        if (now - stats.mtimeMs > MAX_FILE_AGE_MS) {
-          fs.unlinkSync(filePath);
-          console.log('Swept stale temp file:', file);
-        }
-      } catch (_) {}
-    }
-  } catch (e) {
-    console.error('Sweep error:', e.message);
-  }
-}, SWEEP_INTERVAL_MS);
-
-// ─── Global uncaught error handlers — prevent silent crashes ─────────────────
-
-process.on('uncaughtException', (err) => {
-  console.error('[UNCAUGHT EXCEPTION]', err.message);
-  console.error(err.stack);
-  // Do NOT exit — keep the server alive
-});
-
-process.on('unhandledRejection', (reason) => {
-  console.error('[UNHANDLED REJECTION]', reason);
-  // Do NOT exit — keep the server alive
-});
-
-// ─── Start ────────────────────────────────────────────────────────────────────
 
 app.listen(PORT, () => {
-  console.log(`🚀 PocketAssist Downloader running on port ${PORT}`);
+  console.log(`Downloader microservice running on port ${PORT}`);
 });
