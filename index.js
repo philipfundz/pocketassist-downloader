@@ -246,6 +246,110 @@ app.get('/file/:filename', (req, res) => {
   });
 });
 
+// ─── Download Route ───────────────────────────────────────────────────────────
+
+app.post('/download', async (req, res) => {
+  const { url } = req.body;
+  
+  if (!url) {
+    return res.status(400).json({ success: false, error: 'Please provide a valid video URL.' });
+  }
+
+  // Detect platform flags
+  const isYouTube = url.includes('youtube.com') || url.includes('youtu.be');
+  const isInstagram = url.includes('instagram.com');
+  const isFacebook = url.includes('facebook.com') || url.includes('fb.watch');
+
+  const fileId = uuidv4();
+  const outputPath = path.join(TEMP_DIR, `${fileId}.mp4`);
+
+  try {
+    // 1. Fetch options with our fixed Facebook audio/video format strings
+    const opts = buildYtDlpOptions(url, isYouTube, isInstagram, isFacebook, false, outputPath);
+    
+    // 2. Build the argument array for yt-dlp-exec
+    const args = [url];
+    if (opts.format) args.push('-f', opts.format);
+    if (opts.output) args.push('-o', opts.output);
+    if (opts.mergeOutputFormat) args.push('--merge-output-format', opts.mergeOutputFormat);
+    if (opts.cookies) args.push('--cookies', opts.cookies);
+    if (opts.noPlaylist) args.push('--no-playlist');
+    if (opts.noCheckCertificates) args.push('--no-check-certificates');
+    
+    if (opts.addHeader) {
+      opts.addHeader.forEach(header => args.push('--add-header', header));
+    }
+    if (opts.userAgent) args.push('--user-agent', opts.userAgent);
+    if (opts.extractorArgs) args.push('--extractor-args', opts.extractorArgs);
+
+    console.log(`Starting download for URL: ${url}`);
+    
+    // 3. Execute yt-dlp binary
+    const ytDlpPath = path.join(__dirname, 'node_modules/yt-dlp-exec/bin/yt-dlp');
+    const proc = spawn(ytDlpPath, args);
+
+    let stderr = '';
+    proc.stderr.on('data', (data) => { stderr += data.toString(); });
+
+    proc.on('close', async (code) => {
+      if (code !== 0) {
+        console.error('yt-dlp download failed:', stderr);
+        const userMessage = parseYtDlpError(stderr, url) || 'Failed to process this video link.';
+        cleanup(outputPath);
+        return res.status(400).json({ success: false, error: userMessage });
+      }
+
+      if (!fs.existsSync(outputPath)) {
+        return res.status(500).json({ success: false, error: 'Video file processing failed.' });
+      }
+
+      // Check file size for splitting thresholds
+      const stats = fs.statSync(outputPath);
+      const fileSizeInMB = stats.size / (1024 * 1024);
+
+      if (fileSizeInMB <= SAFE_LIMIT_MB) {
+        // Send single direct download token back
+        return res.json({
+          success: true,
+          split: false,
+          files: [`/file/${fileId}.mp4`]
+        });
+      }
+
+      // Split the video using system FFmpeg if it exceeds limits
+      try {
+        console.log(`File size (${fileSizeInMB.toFixed(2)}MB) exceeds limit. Splitting...`);
+        const segmentSeconds = 60; // 1-minute parts
+        const baseSplitId = await splitVideo(outputPath, segmentSeconds);
+        cleanup(outputPath); // Clean up original large file
+
+        // Read all split parts generated in the temp directory
+        const files = fs.readdirSync(TEMP_DIR)
+          .filter(f => f.startsWith(baseSplitId) && f.endsWith('.mp4'))
+          .sort()
+          .slice(0, MAX_PARTS)
+          .map(f => `/file/${f}`);
+
+        return res.json({
+          success: true,
+          split: true,
+          files: files
+        });
+      } catch (splitError) {
+        console.error('Split failed:', splitError);
+        cleanup(outputPath);
+        return res.status(500).json({ success: false, error: 'Failed to split media file safely.' });
+      }
+    });
+
+  } catch (error) {
+    console.error('Route implementation crash:', error);
+    cleanup(outputPath);
+    return res.status(500).json({ success: false, error: 'Internal media processor exception.' });
+  }
+});
+
+
 // ─── ERROR HANDLING MIDDLEWARE ────────────────────────────────────────────────
 
 // 1. Catch 404 errors (like the missing /download route)
