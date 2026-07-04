@@ -4,8 +4,8 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "build": "curl -fsSL https://deno.land/x/install/install.sh | sh && echo 'Deno installed'"
+    "start": "node index.js",
+    "postinstall": "node -e \"require('yt-dlp-exec')\""
   },
   "keywords": [],
   "author": "",

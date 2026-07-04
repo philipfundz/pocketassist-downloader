@@ -21,7 +21,7 @@ if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true });
 // Force update yt-dlp binary on startup
 try {
   console.log('Updating yt-dlp binary...');
-  execSync('node_modules/.bin/yt-dlp -U', { stdio: 'inherit', timeout: 60000 });
+  execSync('node_modules/yt-dlp-exec/bin/yt-dlp -U', { stdio: 'inherit', timeout: 60000 });
   console.log('yt-dlp update complete');
 } catch (e) {
   console.log('yt-dlp update skipped:', e.message);
