@@ -1,5 +1,5 @@
 require('dotenv').config();
-const { spawn } = require('child_process');
+const { spawn, execSync } = require('child_process');
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
@@ -17,6 +17,15 @@ const SAFE_LIMIT_MB = 10;
 const MAX_PARTS = 5;
 
 if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true });
+
+// Force update yt-dlp binary on startup
+try {
+  console.log('Updating yt-dlp binary...');
+  execSync('node_modules/.bin/yt-dlp -U', { stdio: 'inherit', timeout: 60000 });
+  console.log('yt-dlp update complete');
+} catch (e) {
+  console.log('yt-dlp update skipped:', e.message);
+}
 
 // ─── Cookie setup ─────────────────────────────────────────────────────────────
 
