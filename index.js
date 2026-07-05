@@ -273,21 +273,66 @@ app.post('/download', async (req, res) => {
   const fileId = uuidv4();
   const outputPath = path.join(TEMP_DIR, `${fileId}.mp4`);
 
-  try {
-    const opts = buildYtDlpOptions(url, isYouTube, isInstagram, isFacebook, false, outputPath);
-    console.log(`Starting download for URL: ${url}`);
+  const opts = buildYtDlpOptions(url, isYouTube, isInstagram, isFacebook, false, outputPath);
 
-    // Execute yt-dlp via its native module wrapper (handles binary path + env correctly)
-    await ytDlp(url, {
-      format: opts.format,
-      output: opts.output,
-      mergeOutputFormat: opts.mergeOutputFormat,
-      cookies: opts.cookies || undefined,
-      noPlaylist: opts.noPlaylist,
-      noCheckCertificates: opts.noCheckCertificates,
-      addHeader: opts.addHeader || undefined,
-      userAgent: opts.userAgent || undefined,
-      extractorArgs: opts.extractorArgs || undefined,
+  // Build args array for raw spawn (gives us full stderr logging)
+  const ytDlpBin = path.join(__dirname, 'node_modules/yt-dlp-exec/bin/yt-dlp');
+  const args = [url];
+
+  if (opts.format) args.push('-f', opts.format);
+  args.push('-o', opts.output);
+  args.push('--merge-output-format', 'mp4');
+  if (opts.cookies) args.push('--cookies', opts.cookies);
+  args.push('--no-playlist');
+  args.push('--no-check-certificates');
+  if (opts.extractorArgs) args.push('--extractor-args', opts.extractorArgs);
+  if (opts.userAgent) args.push('--user-agent', opts.userAgent);
+  if (opts.addHeader) {
+    for (const h of opts.addHeader) args.push('--add-header', h);
+  }
+
+  console.log(`Starting download for URL: ${url}`);
+  console.log(`yt-dlp args: ${args.join(' ')}`);
+
+  try {
+    await new Promise((resolve, reject) => {
+      const proc = spawn(ytDlpBin, args);
+      let stderr = '';
+      let finished = false;
+
+      proc.stdout.on('data', (d) => process.stdout.write(d));
+      proc.stderr.on('data', (d) => {
+        const chunk = d.toString();
+        stderr += chunk;
+        process.stderr.write(chunk); // stream to Render logs in real time
+      });
+
+      const timeoutHandle = setTimeout(() => {
+        if (!finished) {
+          finished = true;
+          proc.kill('SIGKILL');
+          reject(Object.assign(new Error('DOWNLOAD_TIMEOUT'), { stderr }));
+        }
+      }, 120000); // 2 min timeout
+
+      proc.on('close', (code) => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timeoutHandle);
+        if (code === 0) {
+          resolve();
+        } else {
+          reject(Object.assign(new Error(`yt-dlp exited with code ${code}`), { stderr }));
+        }
+      });
+
+      proc.on('error', (err) => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timeoutHandle);
+        err.stderr = stderr;
+        reject(err);
+      });
     });
 
     if (!fs.existsSync(outputPath)) {
@@ -296,6 +341,7 @@ app.post('/download', async (req, res) => {
 
     const stats = fs.statSync(outputPath);
     const fileSizeInMB = stats.size / (1024 * 1024);
+    console.log(`Download complete. File size: ${fileSizeInMB.toFixed(2)}MB`);
 
     // Small file — return as single part
     if (fileSizeInMB <= SAFE_LIMIT_MB) {
@@ -307,7 +353,7 @@ app.post('/download', async (req, res) => {
     }
 
     // Large file — split into segments via FFmpeg
-    console.log(`File size (${fileSizeInMB.toFixed(2)}MB) exceeds limit. Splitting...`);
+    console.log(`File exceeds ${SAFE_LIMIT_MB}MB limit. Splitting...`);
     const segmentSeconds = 60;
     const baseSplitId = await splitVideo(outputPath, segmentSeconds);
     cleanup(outputPath);
@@ -322,14 +368,10 @@ app.post('/download', async (req, res) => {
       return res.status(500).json({ success: false, error: 'Video splitting failed to generate parts.' });
     }
 
-    return res.json({
-      success: true,
-      split: true,
-      files,
-    });
+    return res.json({ success: true, split: true, files });
 
   } catch (error) {
-    console.error('yt-dlp execution error:', error);
+    console.error('Download failed:', error.message);
     cleanup(outputPath);
     const stderrText = error.stderr || error.message || '';
     const userMessage = parseYtDlpError(stderrText, url) || 'Failed to download this video. Please try again.';
