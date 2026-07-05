@@ -4,6 +4,7 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
+const ytDlp = require('yt-dlp-exec');
 
 const app = express();
 app.use(express.json());
@@ -124,13 +125,24 @@ const buildYtDlpOptions = (url, isYouTube, isInstagram, isFacebook, isInfoOnly, 
     opts.output = outputPath;
     opts.mergeOutputFormat = 'mp4';
 
-    // Format selection — optimized strings to resolve separate DASH video/audio streams
+    // Format selection — ordered from most to least preferred
     if (isFacebook) {
+      // Drop strict [ext=m4a] — Facebook audio is AAC in non-standard containers
       opts.format = 'bestvideo[height<=720]+bestaudio/best[height<=720]/best';
     } else if (isYouTube) {
-      opts.format = 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best[height<=480]/worst';
+      opts.format = [
+        'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]',
+        'best[height<=720][ext=mp4]',
+        'best[height<=480]',
+        'worst',
+      ].join('/');
     } else {
-      opts.format = 'bestvideo[height<=720]+bestaudio/best[height<=720]/best[height<=480]/best';
+      opts.format = [
+        'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]',
+        'best[height<=720][ext=mp4]',
+        'best[height<=480]',
+        'best',
+      ].join('/');
     }
   }
 
@@ -141,7 +153,7 @@ const buildYtDlpOptions = (url, isYouTube, isInstagram, isFacebook, isInfoOnly, 
 
   if (isInstagram) {
     opts.addHeader = [
-      'referer:https://instagram.com',
+      'referer:https://www.instagram.com/',
       'x-ig-app-id:936619743392459',
     ];
     opts.userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
@@ -152,7 +164,7 @@ const buildYtDlpOptions = (url, isYouTube, isInstagram, isFacebook, isInfoOnly, 
     opts.userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
     if (process.env.FACEBOOK_COOKIES) opts.cookies = FB_COOKIES_PATH;
     opts.addHeader = [
-      'referer:https://facebook.com',
+      'referer:https://www.facebook.com/',
     ];
   }
 
@@ -236,8 +248,7 @@ app.get('/file/:filename', (req, res) => {
     return res.status(404).json({ error: 'File not found or already served' });
   }
   res.setHeader('Content-Type', 'video/mp4');
-  
-  // FIXED: Resolved broken line from initial snippet snippet
+
   const stream = fs.createReadStream(filePath);
   stream.pipe(res);
 
@@ -250,12 +261,11 @@ app.get('/file/:filename', (req, res) => {
 
 app.post('/download', async (req, res) => {
   const { url } = req.body;
-  
+
   if (!url) {
     return res.status(400).json({ success: false, error: 'Please provide a valid video URL.' });
   }
 
-  // Detect platform flags
   const isYouTube = url.includes('youtube.com') || url.includes('youtu.be');
   const isInstagram = url.includes('instagram.com');
   const isFacebook = url.includes('facebook.com') || url.includes('fb.watch');
@@ -264,111 +274,81 @@ app.post('/download', async (req, res) => {
   const outputPath = path.join(TEMP_DIR, `${fileId}.mp4`);
 
   try {
-    // 1. Fetch options with our fixed Facebook audio/video format strings
     const opts = buildYtDlpOptions(url, isYouTube, isInstagram, isFacebook, false, outputPath);
-    
-    // 2. Build the argument array for yt-dlp-exec
-    const args = [url];
-    if (opts.format) args.push('-f', opts.format);
-    if (opts.output) args.push('-o', opts.output);
-    if (opts.mergeOutputFormat) args.push('--merge-output-format', opts.mergeOutputFormat);
-    if (opts.cookies) args.push('--cookies', opts.cookies);
-    if (opts.noPlaylist) args.push('--no-playlist');
-    if (opts.noCheckCertificates) args.push('--no-check-certificates');
-    
-    if (opts.addHeader) {
-      opts.addHeader.forEach(header => args.push('--add-header', header));
-    }
-    if (opts.userAgent) args.push('--user-agent', opts.userAgent);
-    if (opts.extractorArgs) args.push('--extractor-args', opts.extractorArgs);
-
     console.log(`Starting download for URL: ${url}`);
-    
-    // 3. Execute yt-dlp binary
-    const ytDlpPath = path.join(__dirname, 'node_modules/yt-dlp-exec/bin/yt-dlp');
-    const proc = spawn(ytDlpPath, args);
 
-    let stderr = '';
-    proc.stderr.on('data', (data) => { stderr += data.toString(); });
+    // Execute yt-dlp via its native module wrapper (handles binary path + env correctly)
+    await ytDlp(url, {
+      format: opts.format,
+      output: opts.output,
+      mergeOutputFormat: opts.mergeOutputFormat,
+      cookies: opts.cookies || undefined,
+      noPlaylist: opts.noPlaylist,
+      noCheckCertificates: opts.noCheckCertificates,
+      addHeader: opts.addHeader || undefined,
+      userAgent: opts.userAgent || undefined,
+      extractorArgs: opts.extractorArgs || undefined,
+    });
 
-    proc.on('close', async (code) => {
-      if (code !== 0) {
-        console.error('yt-dlp download failed:', stderr);
-        const userMessage = parseYtDlpError(stderr, url) || 'Failed to process this video link.';
-        cleanup(outputPath);
-        return res.status(400).json({ success: false, error: userMessage });
-      }
+    if (!fs.existsSync(outputPath)) {
+      return res.status(500).json({ success: false, error: 'Video file processing failed.' });
+    }
 
-      if (!fs.existsSync(outputPath)) {
-        return res.status(500).json({ success: false, error: 'Video file processing failed.' });
-      }
+    const stats = fs.statSync(outputPath);
+    const fileSizeInMB = stats.size / (1024 * 1024);
 
-      // Check file size for splitting thresholds
-      const stats = fs.statSync(outputPath);
-      const fileSizeInMB = stats.size / (1024 * 1024);
+    // Small file — return as single part
+    if (fileSizeInMB <= SAFE_LIMIT_MB) {
+      return res.json({
+        success: true,
+        split: false,
+        files: [`/file/${fileId}.mp4`],
+      });
+    }
 
-      if (fileSizeInMB <= SAFE_LIMIT_MB) {
-        // Send single direct download token back
-        return res.json({
-          success: true,
-          split: false,
-          files: [`/file/${fileId}.mp4`]
-        });
-      }
+    // Large file — split into segments via FFmpeg
+    console.log(`File size (${fileSizeInMB.toFixed(2)}MB) exceeds limit. Splitting...`);
+    const segmentSeconds = 60;
+    const baseSplitId = await splitVideo(outputPath, segmentSeconds);
+    cleanup(outputPath);
 
-      // Split the video using system FFmpeg if it exceeds limits
-      try {
-        console.log(`File size (${fileSizeInMB.toFixed(2)}MB) exceeds limit. Splitting...`);
-        const segmentSeconds = 60; // 1-minute parts
-        const baseSplitId = await splitVideo(outputPath, segmentSeconds);
-        cleanup(outputPath); // Clean up original large file
+    const files = fs.readdirSync(TEMP_DIR)
+      .filter(f => f.startsWith(baseSplitId) && f.endsWith('.mp4'))
+      .sort()
+      .slice(0, MAX_PARTS)
+      .map(f => `/file/${f}`);
 
-        // Read all split parts generated in the temp directory
-        const files = fs.readdirSync(TEMP_DIR)
-          .filter(f => f.startsWith(baseSplitId) && f.endsWith('.mp4'))
-          .sort()
-          .slice(0, MAX_PARTS)
-          .map(f => `/file/${f}`);
+    if (files.length === 0) {
+      return res.status(500).json({ success: false, error: 'Video splitting failed to generate parts.' });
+    }
 
-        return res.json({
-          success: true,
-          split: true,
-          files: files
-        });
-      } catch (splitError) {
-        console.error('Split failed:', splitError);
-        cleanup(outputPath);
-        return res.status(500).json({ success: false, error: 'Failed to split media file safely.' });
-      }
+    return res.json({
+      success: true,
+      split: true,
+      files,
     });
 
   } catch (error) {
-    console.error('Route implementation crash:', error);
+    console.error('yt-dlp execution error:', error);
     cleanup(outputPath);
-    return res.status(500).json({ success: false, error: 'Internal media processor exception.' });
+    const stderrText = error.stderr || error.message || '';
+    const userMessage = parseYtDlpError(stderrText, url) || 'Failed to download this video. Please try again.';
+    return res.status(400).json({ success: false, error: userMessage });
   }
 });
 
+// ─── Error Handling ───────────────────────────────────────────────────────────
 
-// ─── ERROR HANDLING MIDDLEWARE ────────────────────────────────────────────────
-
-// 1. Catch 404 errors (like the missing /download route)
-app.use((req, res, next) => {
-  res.status(404).json({ 
-    success: false, 
-    error: "Route not found. Please verify your bot is hitting the correct endpoint configuration." 
-  });
+app.use((req, res) => {
+  res.status(404).json({ success: false, error: 'Endpoint not found.' });
 });
 
-// 2. Catch 500 internal server errors (crashes, system failures)
 app.use((err, req, res, next) => {
-  console.error('Global Server Error:', err.stack);
-  res.status(500).json({ 
-    success: false, 
-    error: "Something went wrong while processing your media. Please try again in a few moments." 
-  });
+  console.error('Unhandled server error:', err.stack);
+  res.status(500).json({ success: false, error: 'Something went wrong. Please try again.' });
 });
 
+// ─── Start ────────────────────────────────────────────────────────────────────
 
 app.listen(PORT, () => {
   console.log(`Downloader microservice running on port ${PORT}`);
