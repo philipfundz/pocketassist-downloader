@@ -1,31 +1,48 @@
 require('dotenv').config();
-const { spawn, execSync } = require('child_process');
+const { execSync } = require('child_process');
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
+<<<<<<< HEAD
 const { v4: uuidv4 } = require('uuid');
+=======
+>>>>>>> 84b877c (rebuild: modular downloader with description, FB fallback, duration check, queue)
 
-const app = express();
+const {
+  setupCookies,
+  detectPlatform,
+  cleanup,
+  cleanupDir,
+  parseYtDlpError,
+  DEFAULT_DESCRIPTION,
+} = require('./helpers');
+const { downloadVideo } = require('./downloader');
+const { fetchDescription } = require('./metadata');
+
+const app  = express();
 app.use(express.json());
 
-const PORT = process.env.PORT || 3001;
-const TEMP_DIR = path.join(__dirname, 'temp');
+const PORT       = process.env.PORT || 3001;
+const TEMP_DIR   = path.join(__dirname, 'temp');
 const AUTH_TOKEN = process.env.AUTH_TOKEN || 'pocketassist-dl-secret';
 
-const SAFE_LIMIT_MB = 10;
-const MAX_PARTS = 5;
+// ─── Boot Checks ──────────────────────────────────────────────────────────────
 
 if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true });
 
+<<<<<<< HEAD
 // ─── FFmpeg check ─────────────────────────────────────────────────────────────
 
+=======
+>>>>>>> 84b877c (rebuild: modular downloader with description, FB fallback, duration check, queue)
 try {
   execSync('ffmpeg -version', { stdio: 'ignore' });
-  console.log('FFmpeg is installed and accessible');
-} catch (e) {
-  console.error('CRITICAL WARNING: FFmpeg is missing or inaccessible! Video merging and splitting will fail.');
+  console.log('✓ FFmpeg available');
+} catch {
+  console.error('✗ CRITICAL: FFmpeg missing — video splitting will fail');
 }
 
+<<<<<<< HEAD
 // ─── yt-dlp binary setup ──────────────────────────────────────────────────────
 // Copy binary to /tmp so it can self-update — node_modules is read-only on Render
 
@@ -47,52 +64,29 @@ try {
   console.log('Updating yt-dlp binary...');
   execSync(`${ytDlpBin} -U`, { stdio: 'inherit', timeout: 60000 });
   console.log('yt-dlp update complete');
+=======
+try {
+  console.log('Updating yt-dlp binary...');
+  execSync('node_modules/yt-dlp-exec/bin/yt-dlp -U', { stdio: 'inherit', timeout: 60000 });
+  console.log('✓ yt-dlp updated');
+>>>>>>> 84b877c (rebuild: modular downloader with description, FB fallback, duration check, queue)
 } catch (e) {
   console.log('yt-dlp update skipped:', e.message);
 }
 
-// ─── Cookie setup ─────────────────────────────────────────────────────────────
+setupCookies();
 
-const YT_COOKIES_PATH = '/tmp/yt_cookies.txt';
-if (process.env.YOUTUBE_COOKIES) {
-  try {
-    fs.writeFileSync(YT_COOKIES_PATH, process.env.YOUTUBE_COOKIES);
-    console.log('YouTube cookies written to', YT_COOKIES_PATH);
-  } catch (e) {
-    console.error('Failed to write YouTube cookies:', e.message);
-  }
-}
+// ─── Queue Slot (max 1 concurrent download) ───────────────────────────────────
 
-const IG_COOKIES_PATH = '/tmp/ig_cookies.txt';
-if (process.env.INSTAGRAM_COOKIES) {
-  try {
-    fs.writeFileSync(IG_COOKIES_PATH, process.env.INSTAGRAM_COOKIES);
-    console.log('Instagram cookies written to', IG_COOKIES_PATH);
-  } catch (e) {
-    console.error('Failed to write Instagram cookies:', e.message);
-  }
-}
+let activeDownload = false;
 
-const FB_COOKIES_PATH = '/tmp/fb_cookies.txt';
-if (process.env.FACEBOOK_COOKIES) {
-  try {
-    fs.writeFileSync(FB_COOKIES_PATH, process.env.FACEBOOK_COOKIES);
-    console.log('Facebook cookies written to', FB_COOKIES_PATH);
-  } catch (e) {
-    console.error('Failed to write Facebook cookies:', e.message);
-  }
-}
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-const cleanup = (filePath) => {
-  try {
-    if (filePath && fs.existsSync(filePath)) fs.unlinkSync(filePath);
-  } catch (e) {
-    console.error('Cleanup error:', e.message);
-  }
+const acquireSlot = () => {
+  if (activeDownload) return false;
+  activeDownload = true;
+  return true;
 };
 
+<<<<<<< HEAD
 const parseYtDlpError = (stderr = '') => {
   if (!stderr) return null;
 
@@ -242,14 +236,41 @@ app.get('/health', (req, res) => {
 
 // Auth middleware — all routes below require token
 app.use((req, res, next) => {
+=======
+const releaseSlot = () => {
+  activeDownload = false;
+};
+
+// ─── Auth Middleware ──────────────────────────────────────────────────────────
+
+const authMiddleware = (req, res, next) => {
+>>>>>>> 84b877c (rebuild: modular downloader with description, FB fallback, duration check, queue)
   const token = req.headers['x-auth-token'];
   if (token !== AUTH_TOKEN) return res.status(401).json({ error: 'Unauthorized' });
   next();
+};
+
+// ─── Public Routes ────────────────────────────────────────────────────────────
+
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    service: 'pocketassist-downloader',
+    busy: activeDownload,
+  });
 });
 
-// Serve a single split part, then delete it
+// ─── Protected Routes ─────────────────────────────────────────────────────────
+
+app.use(authMiddleware);
+
+// Serve a split part then delete it
 app.get('/file/:filename', (req, res) => {
+<<<<<<< HEAD
   const filename = req.params.filename;
+=======
+  const { filename } = req.params;
+>>>>>>> 84b877c (rebuild: modular downloader with description, FB fallback, duration check, queue)
 
   if (filename.includes('..') || filename.includes('/')) {
     return res.status(400).json({ error: 'Invalid filename' });
@@ -266,6 +287,10 @@ app.get('/file/:filename', (req, res) => {
   stream.pipe(res);
 
   res.on('finish', () => cleanup(filePath));
+<<<<<<< HEAD
+=======
+  res.on('close',  () => cleanup(filePath)); // handles aborted requests too
+>>>>>>> 84b877c (rebuild: modular downloader with description, FB fallback, duration check, queue)
 });
 
 // ─── Download route ───────────────────────────────────────────────────────────
@@ -273,10 +298,11 @@ app.get('/file/:filename', (req, res) => {
 app.post('/download', async (req, res) => {
   const { url } = req.body;
 
-  if (!url) {
+  if (!url || typeof url !== 'string' || !url.startsWith('http')) {
     return res.status(400).json({ success: false, error: 'Please provide a valid video URL.' });
   }
 
+<<<<<<< HEAD
   const isYouTube  = url.includes('youtube.com') || url.includes('youtu.be');
   const isInstagram = url.includes('instagram.com');
   const isFacebook  = url.includes('facebook.com') || url.includes('fb.watch') || url.includes('fb.com/');
@@ -288,13 +314,27 @@ app.post('/download', async (req, res) => {
 
   console.log(`Starting download for: ${url}`);
   console.log(`yt-dlp args: ${args.join(' ')}`);
+=======
+  // Queue gate
+  if (!acquireSlot()) {
+    return res.status(429).json({
+      success: false,
+      error: 'PocketAssist is currently processing another download. Please wait a moment and try again.',
+    });
+  }
+
+  const platform = detectPlatform(url);
+>>>>>>> 84b877c (rebuild: modular downloader with description, FB fallback, duration check, queue)
 
   try {
-    await new Promise((resolve, reject) => {
-      const proc = spawn(ytDlpBin, args);
-      let stderr = '';
-      let finished = false;
+    // Fetch description and download in parallel to save time
+    console.log(`New download request: ${url}`);
+    const [descriptionResult, downloadResult] = await Promise.allSettled([
+      fetchDescription(url, platform),
+      downloadVideo(url, platform),
+    ]);
 
+<<<<<<< HEAD
       proc.stdout.on('data', (d) => process.stdout.write(d));
       proc.stderr.on('data', (d) => {
         const chunk = d.toString();
@@ -309,18 +349,30 @@ app.post('/download', async (req, res) => {
           reject(Object.assign(new Error('DOWNLOAD_TIMEOUT'), { stderr }));
         }
       }, 120000); // 2 min hard timeout
+=======
+    // downloadVideo result — if it failed, throw
+    if (downloadResult.status === 'rejected') throw downloadResult.reason;
 
-      proc.on('close', (code) => {
-        if (finished) return;
-        finished = true;
-        clearTimeout(timeoutHandle);
-        if (code === 0) {
-          resolve();
-        } else {
-          reject(Object.assign(new Error(`yt-dlp exited with code ${code}`), { stderr }));
-        }
-      });
+    const { files, videoOnly } = downloadResult.value;
+    const description = descriptionResult.status === 'fulfilled'
+      ? descriptionResult.value
+      : DEFAULT_DESCRIPTION;
+>>>>>>> 84b877c (rebuild: modular downloader with description, FB fallback, duration check, queue)
 
+    // Build response — description only on the first file
+    const response = {
+      success: true,
+      split: files.length > 1,
+      videoOnly,              // true = Facebook audio was DRM-blocked, video-only served
+      files: files.map((fileUrl, index) => ({
+        url: fileUrl,
+        part: index + 1,
+        total: files.length,
+        ...(index === 0 && { description }), // description only on part 1
+      })),
+    };
+
+<<<<<<< HEAD
       proc.on('error', (err) => {
         if (finished) return;
         finished = true;
@@ -363,17 +415,39 @@ app.post('/download', async (req, res) => {
     }
 
     return res.json({ success: true, split: true, files });
+=======
+    return res.json(response);
+>>>>>>> 84b877c (rebuild: modular downloader with description, FB fallback, duration check, queue)
 
   } catch (error) {
-    console.error('Download failed:', error.message);
-    cleanup(outputPath);
+    console.error('Download error:', error.message);
+
+    // Duration exceeded — friendly message
+    if (error.message === 'DURATION_EXCEEDED') {
+      return res.status(400).json({ success: false, error: error.userMessage });
+    }
+
     const stderrText = error.stderr || error.message || '';
+<<<<<<< HEAD
     const userMessage = parseYtDlpError(stderrText) || 'Failed to download this video. Please try again.';
+=======
+    const userMessage =
+      parseYtDlpError(stderrText) ||
+      'Failed to download this video. The link may be unsupported or the video is unavailable.';
+
+>>>>>>> 84b877c (rebuild: modular downloader with description, FB fallback, duration check, queue)
     return res.status(400).json({ success: false, error: userMessage });
+
+  } finally {
+    releaseSlot();
   }
 });
 
+<<<<<<< HEAD
 // ─── Error handlers ───────────────────────────────────────────────────────────
+=======
+// ─── Fallback Error Handlers ──────────────────────────────────────────────────
+>>>>>>> 84b877c (rebuild: modular downloader with description, FB fallback, duration check, queue)
 
 app.use((req, res) => {
   res.status(404).json({ success: false, error: 'Endpoint not found.' });
@@ -381,12 +455,31 @@ app.use((req, res) => {
 
 app.use((err, req, res, next) => {
   console.error('Unhandled server error:', err.stack);
+  releaseSlot(); // safety release in case of catastrophic error
   res.status(500).json({ success: false, error: 'Something went wrong. Please try again.' });
 });
+
+// ─── Temp Cleanup on Boot ─────────────────────────────────────────────────────
+// Clear any leftover files from a previous crash
+
+try {
+  const leftover = fs.readdirSync(TEMP_DIR);
+  if (leftover.length > 0) {
+    console.log(`Cleaning ${leftover.length} leftover temp file(s) from previous run...`);
+    leftover.forEach(f => cleanup(path.join(TEMP_DIR, f)));
+  }
+} catch (e) {
+  console.warn('Could not clean temp dir on boot:', e.message);
+}
 
 // ─── Start ────────────────────────────────────────────────────────────────────
 
 app.listen(PORT, () => {
+<<<<<<< HEAD
   console.log(`PocketAssist downloader microservice running on port ${PORT}`);
 });
   
+=======
+  console.log(`PocketAssist Downloader running on port ${PORT}`);
+});
+>>>>>>> 84b877c (rebuild: modular downloader with description, FB fallback, duration check, queue)
