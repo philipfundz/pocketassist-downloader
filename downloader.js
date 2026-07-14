@@ -13,7 +13,7 @@ const {
 const YT_DLP_BIN   = path.join(__dirname, 'node_modules/yt-dlp-exec/bin/yt-dlp');
 const TEMP_DIR      = path.join(__dirname, 'temp');
 const SAFE_LIMIT_MB = 10;
-const MAX_PARTS     = 5;
+const MAX_PARTS     = 10;
 const MAX_DURATION  = 900; // 15 minutes in seconds
 const FFMPEG_TIMEOUT = 45000; // 45s
 
@@ -111,14 +111,20 @@ const buildArgs = (url, outputPath, platform) => {
   }
 
   if (isFacebook) {
-    args.push(
-      '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-      '--add-header', 'referer:https://www.facebook.com/'
-    );
-    if (process.env.FACEBOOK_COOKIES) args.push('--cookies', FB_COOKIES_PATH);
-  }
+  args.push(
+    '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
+    '--add-header', 'referer:https://www.facebook.com/',
+    '--add-header', 'accept-language:en-US,en;q=0.9',
+    '--socket-timeout', '30',
+    '--geo-bypass'
+  );
 
-  return args;
+  if (process.env.FACEBOOK_COOKIES) {
+    args.push('--cookies', FB_COOKIES_PATH);
+  }
+}
+
+return args;
 };
 
 // ─── Facebook Video-Only Fallback Args ───────────────────────────────────────
@@ -131,10 +137,26 @@ const buildFbVideoOnlyArgs = (url, outputPath) => {
     '--no-playlist',
     '--no-check-certificates',
     '-f', 'bestvideo[height<=720][ext=mp4]/bestvideo[height<=720]/best[height<=720]',
-    '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-    '--add-header', 'referer:https://www.facebook.com/',
+
+    '--user-agent',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
+
+    '--add-header',
+    'referer:https://www.facebook.com/',
+
+    '--add-header',
+    'accept-language:en-US,en;q=0.9',
+
+    '--socket-timeout',
+    '30',
+
+    '--geo-bypass',
   ];
-  if (process.env.FACEBOOK_COOKIES) args.push('--cookies', FB_COOKIES_PATH);
+
+  if (process.env.FACEBOOK_COOKIES) {
+    args.push('--cookies', FB_COOKIES_PATH);
+  }
+
   return args;
 };
 
@@ -179,28 +201,58 @@ const runYtDlp = (args, timeoutMs = 120000) => {
   });
 };
 
-// ─── FFmpeg Split ─────────────────────────────────────────────────────────────
+// ─── FFmpeg Split (Dynamic) ───────────────────────────────────────────────────
 
-const splitVideo = (inputPath) => {
+const splitVideo = (inputPath, fileSizeMB) => {
   return new Promise((resolve, reject) => {
     const baseId = uuidv4();
     const pattern = path.join(TEMP_DIR, `${baseId}_part%03d.mp4`);
+
+    // Determine how many parts we need
+    const requiredParts = Math.max(
+      2,
+      Math.min(MAX_PARTS, Math.ceil(fileSizeMB / SAFE_LIMIT_MB))
+    );
+
+    // Read video duration
+    let duration = 0;
+
+    try {
+      duration = parseFloat(
+        execSync(
+          `ffprobe -v error -show_entries format=duration -of csv=p=0 "${inputPath}"`
+        )
+          .toString()
+          .trim()
+      );
+    } catch (err) {
+      return reject(new Error('Unable to determine video duration.'));
+    }
+
+    const segmentTime = Math.ceil(duration / requiredParts);
+
+    console.log(
+      `Splitting into ${requiredParts} part(s) (~${segmentTime}s each)`
+    );
 
     const args = [
       '-i', inputPath,
       '-c', 'copy',
       '-map', '0',
       '-f', 'segment',
-      '-segment_time', '60',
+      '-segment_time', String(segmentTime),
       '-reset_timestamps', '1',
       pattern,
     ];
 
     const proc = spawn('ffmpeg', args);
+
     let stderr = '';
     let finished = false;
 
-    proc.stderr.on('data', (d) => { stderr += d.toString(); });
+    proc.stderr.on('data', (d) => {
+      stderr += d.toString();
+    });
 
     const timer = setTimeout(() => {
       if (!finished) {
@@ -212,17 +264,31 @@ const splitVideo = (inputPath) => {
 
     proc.on('close', (code) => {
       if (finished) return;
+
       finished = true;
       clearTimeout(timer);
-      if (code === 0) resolve(baseId);
-      else {
-        console.error('ffmpeg split stderr:', stderr.slice(-1000));
-        reject(new Error(`ffmpeg exited with code ${code}`));
+
+      if (code !== 0) {
+        console.error(stderr.slice(-1000));
+        return reject(new Error(`ffmpeg exited with code ${code}`));
       }
+
+      const parts = fs
+        .readdirSync(TEMP_DIR)
+        .filter(f => f.startsWith(baseId))
+        .sort()
+        .map(f => `/file/${f}`);
+
+      resolve({
+        baseId,
+        parts,
+        totalParts: parts.length,
+      });
     });
 
     proc.on('error', (err) => {
       if (finished) return;
+
       finished = true;
       clearTimeout(timer);
       reject(err);
@@ -305,29 +371,32 @@ const downloadVideo = async (url, platform) => {
 
   // ── Small file — serve as-is ──
   if (fileSizeMB <= SAFE_LIMIT_MB) {
-    return { files: [`/file/${fileId}.mp4`], videoOnly };
+    return {
+  files: [`/file/${fileId}.mp4`],
+  videoOnly,
+  totalParts: 1,
+};
   }
 
   // ── Large file — split ──
   console.log(`File exceeds ${SAFE_LIMIT_MB}MB — splitting...`);
-  let baseSplitId;
-  try {
-    baseSplitId = await splitVideo(outputPath);
-  } finally {
-    cleanup(outputPath); // always remove original after split attempt
-  }
+  let splitResult;
 
-  const parts = fs.readdirSync(TEMP_DIR)
-    .filter(f => f.startsWith(baseSplitId) && f.endsWith('.mp4'))
-    .sort()
-    .slice(0, MAX_PARTS)
-    .map(f => `/file/${f}`);
+try {
+  splitResult = await splitVideo(outputPath, fileSizeMB);
+} finally {
+  cleanup(outputPath);
+}
 
-  if (parts.length === 0) {
-    throw new Error('Video splitting failed to produce any parts.');
-  }
+if (splitResult.parts.length === 0) {
+  throw new Error('Video splitting failed to produce any parts.');
+}
 
-  return { files: parts, videoOnly };
+return {
+  files: splitResult.parts,
+  videoOnly,
+  totalParts: splitResult.totalParts,
+};
 };
 
 module.exports = { downloadVideo };

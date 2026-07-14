@@ -118,25 +118,34 @@ app.post('/download', async (req, res) => {
   try {
     // Fetch description and download in parallel to save time
     console.log(`New download request: ${url}`);
-    const [descriptionResult, downloadResult] = await Promise.allSettled([
-      fetchDescription(url, platform),
-      downloadVideo(url, platform),
-    ]);
+    const descriptionPromise = platform.isFacebook
+  ? Promise.resolve(DEFAULT_DESCRIPTION)
+  : fetchDescription(url, platform);
+
+const [descriptionResult, downloadResult] = await Promise.allSettled([
+  descriptionPromise,
+  downloadVideo(url, platform),
+]);
 
     // downloadVideo result — if it failed, throw
     if (downloadResult.status === 'rejected') throw downloadResult.reason;
 
-    const { files, videoOnly } = downloadResult.value;
+    const {
+  files,
+  videoOnly,
+  totalParts,
+} = downloadResult.value;
     const description = descriptionResult.status === 'fulfilled'
       ? descriptionResult.value
       : DEFAULT_DESCRIPTION;
 
     // Build response — description only on the first file
     const response = {
-      success: true,
-      split: files.length > 1,
-      videoOnly,              // true = Facebook audio was DRM-blocked, video-only served
-      files: files.map((fileUrl, index) => ({
+  success: true,
+  split: files.length > 1,
+  totalParts,
+  videoOnly,
+  files: files.map((fileUrl, index) => ({
         url: fileUrl,
         part: index + 1,
         total: files.length,
