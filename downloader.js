@@ -11,7 +11,7 @@ const {
 
 const YT_DLP_BIN    = path.join(__dirname, 'node_modules/yt-dlp-exec/bin/yt-dlp');
 const TEMP_DIR       = path.join(__dirname, 'temp');
-const SAFE_LIMIT_MB  = 10;
+const SAFE_LIMIT_MB  = 14;
 const MAX_PARTS_CEIL = 20;       // sanity ceiling only — not a quality-degrading cap
 const MAX_DURATION   = 900;      // 15 minutes in seconds
 

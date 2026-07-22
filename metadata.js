@@ -60,13 +60,13 @@ const fetchDescription = (url, platform) => {
 
     // timeout — if info fetch hangs, just fall back to default
     const timer = setTimeout(() => {
-      if (!finished) {
-        finished = true;
-        proc.kill('SIGKILL');
-        console.warn('Metadata fetch timed out — using default description');
-        resolve(DEFAULT_DESCRIPTION);
-      }
-    }, 20000);
+  if (!finished) {
+    finished = true;
+    proc.kill('SIGKILL');
+    console.warn('Metadata fetch timed out — using default description');
+    resolve(DEFAULT_DESCRIPTION);
+  }
+}, 5000);
 
     proc.stdout.on('data', (d) => { stdout += d.toString(); });
 
