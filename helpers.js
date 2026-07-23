@@ -60,10 +60,7 @@ const cleanupDir = (dir, prefix) => {
 
 // ─── Error Parser ─────────────────────────────────────────────────────────────
 
-const DEFAULT_DESCRIPTION =
-  '📥 Downloaded via PocketAssist\n' +
-  'Your AI-powered WhatsApp utility bot.\n' +
-  'Get started → wa.me/2348120112564';
+const DEFAULT_DESCRIPTION = '🎬 Downloaded via PocketAssist';
 
 const parseYtDlpError = (stderr = '') => {
   if (!stderr) return null;
