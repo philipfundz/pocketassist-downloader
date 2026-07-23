@@ -121,7 +121,7 @@ const runJob = async (jobId) => {
     }
 
     console.log(`[Job ${jobId}] fetching description + video in parallel`);
-    const descriptionPromise = (job.platform.isFacebook || job.platform.isTikTok)
+    const descriptionPromise = (job.platform.isFacebook || job.platform.isTikTok || job.platform.isTwitter)
   ? Promise.resolve(DEFAULT_DESCRIPTION)
   : fetchDescription(job.url, job.platform);
 
